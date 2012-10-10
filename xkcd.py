@@ -3,11 +3,14 @@
 
 import os
 import math
-import urllib
 
 import gi
 from gi.repository import GLib
 from gi.repository import Clutter
+from gi.repository import Gio
+from gi.repository import GdkPixbuf
+
+import hacks
 
 Clutter.init(None)
 
@@ -19,7 +22,7 @@ ACTOR_SIZE = 2048
 smap = {'x':{-1:'e',1:'w'},'y':{1:'n',-1:'s'}}
 
 # if you set this, all magic goes away
-DEBUG=0
+DEBUG=1
 
 if DEBUG:
     sky_color = Clutter.Color.new(0,255,0,0)
@@ -35,7 +38,7 @@ else:
 class XaMap:
     def __init__(self, tex=None, stage=None):
         self.current_tile = [0, 0]
-        self.cache_dir = ".cache"
+        self.cache_dir = os.path.abspath(".cache")
         self.base_url = "http://imgs.xkcd.com/clickdrag/"
 
         try:
@@ -43,12 +46,20 @@ class XaMap:
         except OSError:
             pass
 
+        self.tile_cache = {}
+
         if (tex):
             self.tex = tex
         else:
-            self.tex = ([self.new_col ( 1, 0, 0),
-                         self.new_col ( 0, 0, 0),
-                         self.new_col (-1, 0, 0)])
+            for i in range (-1, 2):
+                for j in range (-1, 2):
+                    self.new_tile (i, j)
+#            self.tex = ([self.new_col ( 1, 0, 0),
+#                         self.new_col ( 0, 0, 0),
+#                         self.new_col (-1, 0, 0)])
+#            self.tex = ([[None, self.new_tex (1, 0), None],
+#                         self.new_col (0, 0, 0),
+#                         [None, None, None]])
 
         print "DEBUG", tex
 
@@ -61,12 +72,11 @@ class XaMap:
         self.stage.set_title ("XKCD: #1110")
 
         self.scroll = Clutter.Actor()
-        self.scroll.add_action (Clutter.DragAction())
-        self.scroll.set_reactive (True)
+        action = Clutter.DragAction()
+        action.connect ("drag-end", self.drag_end_cb)
+        self.scroll.add_action (action)
 
-        for i in range(3):
-            for j in range(3):
-                self.show_tile(i, j)
+        self.scroll.set_reactive (True)
 
         self.stage.add_actor (self.scroll)
         self.stage.show()
@@ -76,18 +86,32 @@ class XaMap:
         self.scroll.set_position (0, -1100)
         self.stage.connect ("key-press-event", self.on_key_press, self.scroll)
 
+    def drag_end_cb (self, dragaction, actor, event_x, event_y, modifiers):
+        self.recenter ()
+
+    def remove_tile (self, x, y):
+        try:
+            print "removing:", (x,y)
+            self.scroll.remove_actor (self.tile_cache[x, y])
+            del(self.tile_cache[x, y])
+        except Exception as exe:
+            print "Couldn't remove tile, probably never made it", exe
+
     def new_col (self, direction, x, y):
-            col = [self.new_tex (x + direction, y + 1),
-                   self.new_tex (x + direction, y),
-                   self.new_tex (x + direction, y - 1)]
-            print "new col", col
-            return col
+        self.new_tile    (x + direction, y + 1)
+        self.new_tile    (x + direction, y)
+        self.new_tile    (x + direction, y - 1)
+        self.remove_tile (x - 2*direction, y + 1)
+        self.remove_tile (x - 2*direction, y)
+        self.remove_tile (x - 2*direction, y - 1)
 
     def new_row (self, direction, x, y):
-            row = [self.new_tex (x + 1, y + direction),
-                   self.new_tex (x    , y + direction),
-                   self.new_tex (x - 1, y + direction)]
-            return row
+        self.new_tile    (x + 1, y + direction)
+        self.new_tile    (x    , y + direction)
+        self.new_tile    (x - 1, y + direction)
+        self.remove_tile (x + 1, y - 2*direction)
+        self.remove_tile (x    , y - 2*direction)
+        self.remove_tile (x - 1, y - 2*direction)
 
     def get_tile_filename (self, x, y):
         if (x<=0):
@@ -97,38 +121,21 @@ class XaMap:
 
         return "%d%c%d%c.png" % (abs(y), smap['y'][y/abs(y)], abs(x), smap['x'][x/abs(x)])
 
-    def new_tex (self, x, y):
-        print "loading tile for position: ", (x, y)
+    def new_tile (self, x, y, cb=None):
+        if not cb:
+            cb = self.show_tile
         f = self.get_tile_filename (x, y)
-        f = self.check_cache (f)
-
-        try:
-            texture = Clutter.Texture.new_from_file (f)
-            print (f, texture)
-            return texture
-        except (gi._glib.GError):
-            print ("couldn't find %s: " % f)
-            return None
+        uri = self.check_cache (f)
+        print "loading tile for position: ", (x, y), "\tusing method", uri
+        return hacks.PixbufTexture.new_from_uri (uri, cb, (x,y))
 
     def check_cache (self, fn):
         try:
             os.stat (self.cache_dir + '/' + fn)
         except OSError:
-            self.download ("http://imgs.xkcd.com/clickdrag/" + fn)
+            return ("http://imgs.xkcd.com/clickdrag/" + fn)
 
-        return self.cache_dir + '/' + fn
-
-    def download(self, url):
-    	"""Copy the contents of a file from a given URL
-    	to a local file.
-    	"""
-
-        print "downloading", url
-    	web_file = urllib.urlopen(url)
-    	cache_file = open(self.cache_dir + '/' + url.split('/')[-1], 'w')
-    	cache_file.write(web_file.read())
-    	web_file.close()
-    	cache_file.close()
+        return 'file://' + self.cache_dir + '/' + fn
 
     def set_current_tile (self, tile):
         self.current_tile = tile
@@ -137,72 +144,41 @@ class XaMap:
         elif (tile[1] < 0):
             self.stage.set_background_color (earth_color)
 
+    def show_tile (self, actor, pos):
+        x, y = pos
+        #        nx = (-self.current_tile[0] + x)*ACTOR_SIZE
+        #        ny = (-self.current_tile[1] + y)*ACTOR_SIZE
+        nx = -x*ACTOR_SIZE
+        ny = -y*ACTOR_SIZE
 
-    def show_tile (self, x, y):
-        actor = self.tex[x][y]
-        nx = (-self.current_tile[0] + x - 1)*ACTOR_SIZE
-        ny = (-self.current_tile[1] + y - 1)*ACTOR_SIZE
+        if self.tile_cache.has_key ((x,y)):
+            print "Tile already cached at", (x,y), self.tile_cache
+            raise KeyError
 
-        print "moving", actor, "to:", (x,y), self.current_tile, "to", nx, ny
+        self.tile_cache[(x,y)] = actor
+
+        print "moving", actor,  "to:", (x,y), self.current_tile, "to", nx, ny
         if not actor:
             print "No tile at", x, y
             return
 
-        self.scroll.add_actor (actor)
         actor.set_position(nx, ny)
+        self.scroll.add_actor (actor)
+        #actor.add_action (Clutter.DragAction())
+        actor.set_reactive (True)
 
-    def add_row (self, direction, row):
-        if (direction != -1) and (direction != 1):
-            raise ValueError
-
-        for i in range(3):
-            if self.tex[i][1+direction]:
-                self.scroll.remove_actor(self.tex[i][1+direction])
-            for j in range (2):
-                if (direction == -1):
-                    self.tex[i][j] = self.tex[i][j+1]
-                else:
-                    self.tex[i][2-j] = self.tex[i][1-j]
-            self.tex[i][1-direction] = row[i]
-            self.show_tile (i, 1-direction)
-
-    def add_col (self, direction, col):
-        if (direction != -1) and (direction != 1):
-            raise ValueError
-
-        for j in range(3):
-            actor = self.tex[1+direction][j]
-            if actor:
-                self.scroll.remove_actor (actor)
-                del(actor)
-            for i in range (2):
-                if (direction == -1):
-                    self.tex[i][j] = self.tex[i+1][j]
-                else:
-                    self.tex[2-i][j] = self.tex[1-i][j]
-            self.tex[1-direction][j] = col[j]
-            self.show_tile (1-direction, j)
-
-        print self.tex
-
-    # this blocks the UI, we'd need a GAsync, to get the data and all, just cache it… =/
-    def recenter (self, tile, motion):
-        GLib.idle_add (self.do_recenter, (tile, motion))
-
-    def do_recenter (self, args):
-        tile, motion = args
-
+    def do_recenter (self, tile, motion):
         print "recentering", tile, motion
         self.set_current_tile(tile)
 
         if DEBUG:
-            debug_text.set_text ("current Tile:" + str(tile) + get_tile_filename(*tile))
+            debug_text.set_text ("current Tile:" + str(tile) + self.get_tile_filename(*tile))
         if motion[0]:
             print "adding a col"
-            self.add_col(motion[0], self.new_col(motion[0], *tile))
+            self.new_col(motion[0], *tile)
         if motion[1]:
             print "adding a row"
-            self.add_row(motion[1], self.new_row(motion[1], *tile))
+            self.new_row(motion[1], *tile)
 
     def on_key_press (self, stage, event, actor):
         if event.keyval == Clutter.KEY_q:
@@ -220,13 +196,16 @@ class XaMap:
         if event.keyval == Clutter.KEY_Right:
             actor.move_by (-FORCE, 0)
 
-        pos = actor.get_position()
+        self.recenter ()
+
+    def recenter (self):
+        pos = self.scroll.get_position()
         tile = [1 + int(math.floor((pos[i] - self.stage_size[i])/ACTOR_SIZE)) for i in range(2)]
 
-#        print "keypress" tile, pos, self.stage_size, actor.get_size()
+        print "recenter?", pos, tile, self.current_tile
         if (tile != self.current_tile):
             motion = [tile[i] - self.current_tile[i] for i in range(2)]
-            self.recenter (tile, motion)
+            self.do_recenter (tile, motion)
 
 def show_cb (actor, coord):
     x, y = coord
