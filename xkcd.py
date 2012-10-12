@@ -22,7 +22,7 @@ ACTOR_SIZE = 2048
 smap = {'x':{-1:'e',1:'w'},'y':{1:'n',-1:'s'}}
 
 # if you set this, all magic goes away
-DEBUG=1
+DEBUG=0
 
 if DEBUG:
     sky_color = Clutter.Color.new(0,255,0,0)
@@ -71,12 +71,8 @@ class XaMap:
         self.stage.set_background_color (sky_color)
         self.stage.set_title ("XKCD: #1110")
 
-        self.scroll = Clutter.Actor()
-        action = Clutter.DragAction()
-        action.connect ("drag-end", self.drag_end_cb)
-        self.scroll.add_action (action)
-
-        self.scroll.set_reactive (True)
+        self.scroll = Clutter.Group()
+        self.scroll.set_size (-1, -1)
 
         self.stage.add_actor (self.scroll)
         self.stage.show()
@@ -85,9 +81,6 @@ class XaMap:
 
         self.scroll.set_position (0, -1100)
         self.stage.connect ("key-press-event", self.on_key_press, self.scroll)
-
-    def drag_end_cb (self, dragaction, actor, event_x, event_y, modifiers):
-        self.recenter ()
 
     def remove_tile (self, x, y):
         try:
@@ -139,10 +132,6 @@ class XaMap:
 
     def set_current_tile (self, tile):
         self.current_tile = tile
-        if (tile[1] > 0):
-            self.stage.set_background_color (sky_color)
-        elif (tile[1] < 0):
-            self.stage.set_background_color (earth_color)
 
     def show_tile (self, actor, pos):
         x, y = pos
@@ -164,8 +153,24 @@ class XaMap:
 
         actor.set_position(nx, ny)
         self.scroll.add_actor (actor)
-        #actor.add_action (Clutter.DragAction())
+
+        action = Clutter.DragAction()
+#        action.connect ("drag-begin",    self.drag_begin_cb)
+        action.connect ("drag-end"  ,    self.drag_end_cb)
+        action.connect ("drag-progress", self.drag_progress_cb, self.scroll)
+        actor.add_action (action)
         actor.set_reactive (True)
+
+    def drag_begin_cb (self, action, actor, event_x, event_y, modifiers):
+        print "DRAG START\t", self.scroll.get_position(), event_x, event_y
+
+    def drag_end_cb (self, action, actor, event_x, event_y, modifiers):
+         self.recenter ()
+
+    def drag_progress_cb (self, action, actor, delta_x, delta_y, arg=None):
+        if arg:
+            arg.move_by (delta_x, delta_y)
+            return False
 
     def do_recenter (self, tile, motion):
         print "recentering", tile, motion
@@ -201,6 +206,12 @@ class XaMap:
     def recenter (self):
         pos = self.scroll.get_position()
         tile = [1 + int(math.floor((pos[i] - self.stage_size[i])/ACTOR_SIZE)) for i in range(2)]
+
+        if (pos[1] > 0):
+            self.stage.set_background_color (sky_color)
+        else:
+            self.stage.set_background_color (earth_color)
+
 
         print "recenter?", pos, tile, self.current_tile
         if (tile != self.current_tile):
