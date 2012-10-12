@@ -161,6 +161,8 @@ class XaMap:
         actor.add_action (action)
         actor.set_reactive (True)
 
+        actor.props.clip_to_allocation = True
+
     def drag_begin_cb (self, action, actor, event_x, event_y, modifiers):
         print "DRAG START\t", self.scroll.get_position(), event_x, event_y
 
